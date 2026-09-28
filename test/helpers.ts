@@ -2,7 +2,7 @@ import sharp from 'sharp';
 import { createApp } from '../src/app.ts';
 import type { Config } from '../src/config.ts';
 import { createContext } from '../src/context.ts';
-import type { AppContext } from '../src/context.ts';
+import type { Hooks } from '../src/context.ts';
 import { openDb } from '../src/db/index.ts';
 import { migrate } from '../src/db/migrate.ts';
 import type { EventInput } from '../src/domain/events.ts';
@@ -19,6 +19,8 @@ export const testConfig: Config = {
   appSecret: 'test-app-secret-with-at-least-32-characters',
   publicBaseUrl: BASE_URL,
   smtpPasswordOverride: undefined,
+  stripeSecretKeyOverride: undefined,
+  stripeWebhookSecretOverride: undefined,
 };
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -50,7 +52,7 @@ export function samplePng(width = 2000, height = 1000): Promise<Buffer> {
     .toBuffer();
 }
 
-export async function createTestApp(hooks: Pick<AppContext, 'mailTransport' | 'download'> = {}) {
+export async function createTestApp(hooks: Hooks = {}) {
   const db = await openDb(testConfig.databaseUrl);
   await migrate(db);
   const ctx = createContext(testConfig, db, hooks);
@@ -92,6 +94,7 @@ export async function createTestApp(hooks: Pick<AppContext, 'mailTransport' | 'd
       status: string;
       expires_at?: Date;
     }) {
+      // Orders made by hand, without a checkout.
       await db.query(
         `insert into orders (event_id, ticket_type_id, quantity, status, expires_at)
          values ($1, $2, $3, $4, $5)`,
@@ -100,7 +103,10 @@ export async function createTestApp(hooks: Pick<AppContext, 'mailTransport' | 'd
     },
 
     async reset() {
-      await db.exec('truncate orders, upload_tokens, ticket_types, events, images, settings cascade');
+      await ctx.idle();
+      await db.exec(
+        'truncate orders, stripe_events, upload_tokens, ticket_types, events, images, settings cascade',
+      );
       ctx.invalidateSettings();
     },
 

@@ -64,20 +64,28 @@ describe('access', () => {
     expect(body.result.tools.map((tool: any) => tool.name).sort()).toEqual([
       'add_ticket_type',
       'create_event',
+      'create_stripe_webhook',
       'create_thumbnail_upload',
       'delete_event',
       'duplicate_event',
       'get_event',
+      'get_order',
       'get_settings',
+      'get_stripe_status',
       'list_events',
+      'list_orders',
+      'refund_order',
       'remove_event_thumbnail',
       'remove_ticket_type',
+      'resend_confirmation',
+      'resend_confirmations',
       'send_test_email',
       'set_event_status',
       'set_event_thumbnail_from_url',
       'update_event',
       'update_mail_settings',
       'update_settings',
+      'update_stripe_settings',
       'update_ticket_type',
     ]);
   });
@@ -111,7 +119,8 @@ describe('managing events', () => {
       starts_at: daysFromNow(21).toISOString(),
       ends_at: daysFromNow(21, 3).toISOString(),
     });
-    expect(updated.data).toMatchObject({
+    expect(updated.data.warnings).toEqual([]);
+    expect(updated.data.event).toMatchObject({
       title: 'Prompting Workshop',
       summary: 'Kompakt an einem Vormittag',
       online_url: 'https://meet.example.test/workshop',

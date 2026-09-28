@@ -8,6 +8,8 @@ const schema = z.object({
   APP_SECRET: z.string().min(32, 'must be at least 32 characters'),
   PUBLIC_BASE_URL: z.url().default('http://localhost:3000'),
   SMTP_PASSWORD: z.string().min(1).optional(),
+  STRIPE_SECRET_KEY: z.string().min(1).optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().min(1).optional(),
 });
 
 export interface Config {
@@ -18,6 +20,8 @@ export interface Config {
   appSecret: string;
   publicBaseUrl: string;
   smtpPasswordOverride: string | undefined;
+  stripeSecretKeyOverride: string | undefined;
+  stripeWebhookSecretOverride: string | undefined;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -40,5 +44,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     appSecret: value.APP_SECRET,
     publicBaseUrl: value.PUBLIC_BASE_URL.replace(/\/+$/, ''),
     smtpPasswordOverride: value.SMTP_PASSWORD,
+    stripeSecretKeyOverride: value.STRIPE_SECRET_KEY,
+    stripeWebhookSecretOverride: value.STRIPE_WEBHOOK_SECRET,
   };
 }

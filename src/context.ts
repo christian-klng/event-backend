@@ -7,23 +7,36 @@ import type { downloadPublicFile } from './lib/safe-fetch.ts';
 
 const SETTINGS_TTL_MS = 15_000;
 
-export interface AppContext {
+export interface StripeConnection {
+  /** Replaces the network layer of the Stripe SDK. */
+  fetch?: typeof fetch;
+  host?: string;
+  port?: number;
+  protocol?: 'http' | 'https';
+}
+
+export interface Hooks {
+  mailTransport?: TransportFactory;
+  download?: typeof downloadPublicFile;
+  stripe?: StripeConnection;
+}
+
+export interface AppContext extends Hooks {
   config: Config;
   db: Db;
   /** General settings, cached briefly because every public request needs them. */
   generalSettings(): Promise<GeneralSettings>;
   invalidateSettings(): void;
-  /** Test hooks. */
-  mailTransport?: TransportFactory;
-  download?: typeof downloadPublicFile;
+  /** Runs work after the response was sent. Failures are logged, never thrown. */
+  background(label: string, work: () => Promise<unknown>): void;
+  /** Resolves when all background work is done. */
+  idle(): Promise<void>;
 }
 
-export function createContext(
-  config: Config,
-  db: Db,
-  hooks: Pick<AppContext, 'mailTransport' | 'download'> = {},
-): AppContext {
+export function createContext(config: Config, db: Db, hooks: Hooks = {}): AppContext {
   let cached: { value: GeneralSettings; expires: number } | undefined;
+  const running = new Set<Promise<unknown>>();
+
   return {
     config,
     db,
@@ -36,6 +49,15 @@ export function createContext(
     },
     invalidateSettings() {
       cached = undefined;
+    },
+    background(label, work) {
+      const task = work()
+        .catch((err) => console.error(`${label} failed`, err))
+        .finally(() => running.delete(task));
+      running.add(task);
+    },
+    async idle() {
+      while (running.size > 0) await Promise.all(running);
     },
   };
 }

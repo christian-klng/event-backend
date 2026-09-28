@@ -8,6 +8,7 @@ export interface MailMessage {
   subject: string;
   text: string;
   html?: string;
+  attachments?: { filename: string; content: string; contentType: string }[];
 }
 
 export interface SmtpOptions {
@@ -61,6 +62,7 @@ export async function sendMail(
       subject: message.subject,
       text: message.text,
       html: message.html,
+      attachments: message.attachments,
     });
     return { message_id: typeof info?.messageId === 'string' ? info.messageId : null };
   } catch (err) {

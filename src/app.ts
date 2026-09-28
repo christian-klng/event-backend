@@ -1,18 +1,22 @@
 import { Hono } from 'hono';
 import type { AppContext } from './context.ts';
+import { checkoutRoutes } from './http/checkout.ts';
 import { publicRoutes } from './http/public.ts';
 import { uploadRoutes } from './http/uploads.ts';
 import { DomainError } from './lib/errors.ts';
 import { mcpRoutes } from './mcp/http.ts';
 
-const STATUS_BY_CODE = { not_found: 404, invalid: 400, conflict: 409 } as const;
+const STATUS_BY_CODE = { not_found: 404, invalid: 400, conflict: 409, unavailable: 503 } as const;
 
 export function createApp(ctx: AppContext): Hono {
   const app = new Hono();
 
   app.onError((err, c) => {
     if (err instanceof DomainError) {
-      return c.json({ error: err.code, message: err.message }, STATUS_BY_CODE[err.code]);
+      return c.json(
+        { error: err.code, message: err.message, ...(err.reason ? { reason: err.reason } : {}) },
+        STATUS_BY_CODE[err.code],
+      );
     }
     console.error('request failed', c.req.method, c.req.path, err);
     return c.json({ error: 'internal', message: 'Unexpected server error' }, 500);
@@ -30,6 +34,7 @@ export function createApp(ctx: AppContext): Hono {
   });
 
   app.route('/', publicRoutes(ctx));
+  app.route('/', checkoutRoutes(ctx));
   app.route('/', uploadRoutes(ctx));
   app.route('/', mcpRoutes(ctx));
 

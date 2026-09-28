@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import sharp from 'sharp';
 import type { AppContext } from '../context.ts';
 import { findEvent, listEvents } from '../domain/events.ts';
 import { findImage, IMAGE_VARIANTS } from '../domain/images.ts';
@@ -58,14 +59,19 @@ export function publicRoutes(ctx: AppContext): Hono {
   });
 
   app.get('/media/:hash/:file', async (c) => {
-    const variant = IMAGE_VARIANTS.find((name) => `${name}.webp` === c.req.param('file'));
-    const image = variant
-      ? await findImage(ctx.db, c.req.param('hash'), variant satisfies ImageVariant)
-      : null;
-    if (!image) return c.json({ error: 'not_found', message: 'Image not found' }, 404);
+    // Pictures are stored as WebP. The JPEG form exists for services that cannot show WebP.
+    const [name, extension] = c.req.param('file').split('.');
+    const variant = IMAGE_VARIANTS.find((candidate) => candidate === name);
+    const stored =
+      variant && (extension === 'webp' || extension === 'jpg')
+        ? await findImage(ctx.db, c.req.param('hash'), variant satisfies ImageVariant)
+        : null;
+    if (!stored) return c.json({ error: 'not_found', message: 'Image not found' }, 404);
+    const image =
+      extension === 'jpg' ? await sharp(stored).jpeg({ quality: 85 }).toBuffer() : stored;
     return new Response(new Uint8Array(image), {
       headers: {
-        'content-type': 'image/webp',
+        'content-type': extension === 'jpg' ? 'image/jpeg' : 'image/webp',
         'content-length': String(image.byteLength),
         // The hash in the URL changes with the picture, so browsers may keep it forever.
         'cache-control': 'public, max-age=31536000, immutable',

@@ -43,6 +43,8 @@ export interface EventRecord {
   location_name: string | null;
   location_address: string | null;
   online_url: string | null;
+  /** null means: use the default tax rate from the settings. */
+  tax_percent: number | null;
   thumbnail_hash: string | null;
   thumbnail_width: number | null;
   thumbnail_height: number | null;
@@ -76,6 +78,7 @@ export interface EventInput {
   location_name?: string | null;
   location_address?: string | null;
   online_url?: string | null;
+  tax_percent?: number | null;
   ticket_types?: TicketTypeInput[];
 }
 
@@ -92,12 +95,16 @@ export interface StatusChange {
   warnings: string[];
 }
 
+/** Stripe does not charge less than this. */
+export const MIN_PRICE_CENTS = 50;
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const EVENT_SELECT = `
   select e.id, e.slug, e.status, e.title, e.summary, e.description_md, e.format,
          e.starts_at, e.ends_at, e.timezone, e.location_name, e.location_address,
-         e.online_url, e.thumbnail_hash, i.width as thumbnail_width,
+         e.online_url, e.tax_percent::float8 as tax_percent, e.thumbnail_hash,
+         i.width as thumbnail_width,
          i.height as thumbnail_height, e.created_at, e.updated_at
   from events e
   left join images i on i.hash = e.thumbnail_hash
@@ -203,8 +210,8 @@ export async function createEvent(db: Db, input: EventInput): Promise<EventRecor
     const slug = await resolveSlug(tx, input.slug, input.title);
     const [row] = await tx.query<{ id: string }>(
       `insert into events (slug, title, summary, description_md, format, starts_at, ends_at,
-                           timezone, location_name, location_address, online_url)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                           timezone, location_name, location_address, online_url, tax_percent)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        returning id`,
       [
         slug,
@@ -218,6 +225,7 @@ export async function createEvent(db: Db, input: EventInput): Promise<EventRecor
         input.location_name ?? null,
         input.location_address ?? null,
         input.online_url ?? null,
+        input.tax_percent ?? null,
       ],
     );
     if (!row) throw new Error('insert returned no row');
@@ -256,6 +264,7 @@ export async function updateEvent(db: Db, idOrSlug: string, patch: EventPatch): 
       'location_name',
       'location_address',
       'online_url',
+      'tax_percent',
     ] as const) {
       if (patch[key] !== undefined) values[key] = patch[key];
     }
@@ -331,6 +340,7 @@ export async function duplicateEvent(
     location_name: source.location_name,
     location_address: source.location_address,
     online_url: source.online_url,
+    tax_percent: source.tax_percent,
     // Sales windows belong to the original dates and are not carried over.
     ticket_types: source.ticket_types.map((ticket) => ({
       name: ticket.name,
@@ -547,6 +557,9 @@ function validateEventFields(input: EventPatch): void {
   if (input.timezone !== undefined && !isTimeZone(input.timezone)) {
     throw new DomainError('invalid', `"${input.timezone}" is not a known time zone.`);
   }
+  if (input.tax_percent != null && !(input.tax_percent >= 0 && input.tax_percent <= 100)) {
+    throw new DomainError('invalid', 'The tax rate must be between 0 and 100 percent.');
+  }
   if (input.online_url) {
     let protocol = '';
     try {
@@ -564,8 +577,14 @@ function validateTicketFields(input: TicketTypePatch): void {
   if (input.name !== undefined && !input.name.trim()) {
     throw new DomainError('invalid', 'The ticket name must not be empty.');
   }
-  if (input.price_cents !== undefined && (!Number.isInteger(input.price_cents) || input.price_cents < 0)) {
-    throw new DomainError('invalid', 'The price must be a whole number of cents, zero or more.');
+  if (
+    input.price_cents !== undefined &&
+    (!Number.isInteger(input.price_cents) || input.price_cents < MIN_PRICE_CENTS)
+  ) {
+    throw new DomainError(
+      'invalid',
+      `The price must be a whole number of cents, at least ${MIN_PRICE_CENTS}. Free tickets are not supported.`,
+    );
   }
   if (input.capacity != null && (!Number.isInteger(input.capacity) || input.capacity < 0)) {
     throw new DomainError('invalid', 'The capacity must be a whole number, zero or more.');

@@ -22,7 +22,22 @@ import {
   removeEventThumbnail,
   setEventThumbnail,
 } from '../domain/images.ts';
+import { refundOrder } from '../domain/checkout.ts';
+import {
+  deliverConfirmations,
+  requeueConfirmations,
+  resendConfirmation,
+} from '../domain/confirmation.ts';
 import { sendMail } from '../domain/mail.ts';
+import { getOrder, listOrders, ORDER_STATUSES } from '../domain/orders.ts';
+import type { Order } from '../domain/orders.ts';
+import {
+  createStripeWebhook,
+  explainStripeError,
+  getStripeStatus,
+  listSetupProblems,
+  updateStripeKeys,
+} from '../domain/stripe.ts';
 import { toAdminEvent, toAdminEventSummary } from '../domain/present.ts';
 import {
   describeMailSettings,
@@ -44,6 +59,10 @@ Manages seminars and workshops that are sold on the organizer's website.
 - An event has a format (online, onsite, hybrid) and one or more ticket types. Each ticket type has
   its own price and seat capacity. Hybrid events need separate ticket types for online and onsite.
 - The online URL is secret. It is only sent to buyers and never appears on the website.
+- Ticket sales need a connected Stripe account, a webhook, the checkout URLs and a tax rate.
+  get_stripe_status lists what is missing.
+- Buyers get a confirmation mail with the access link or the venue after the payment. When the
+  online URL of an event changes later, resend_confirmations sends them the new one.
 - Thumbnails: use set_event_thumbnail_from_url for pictures on the web. For a local file, call
   create_thumbnail_upload and upload the file with the returned curl command.
 `.trim();
@@ -79,6 +98,13 @@ const eventShape = {
   location_name: optionalText.describe('Venue name, for onsite and hybrid events'),
   location_address: optionalText.describe('Venue address, for onsite and hybrid events'),
   online_url: optionalText.describe('Access link for online and hybrid events. Kept secret'),
+  tax_percent: z
+    .number()
+    .min(0)
+    .max(100)
+    .nullable()
+    .optional()
+    .describe('Tax rate included in the prices of this event. null = default from the settings'),
 };
 
 type ToolResult = {
@@ -206,12 +232,23 @@ export function buildMcpServer(ctx: AppContext): McpServer {
     },
     ({ event, starts_at, ends_at, ...fields }) =>
       run(async () => {
+        const before = await getEvent(db, event);
         const updated = await updateEvent(
           db,
           event,
           sent({ ...fields, starts_at: toDate(starts_at), ends_at: toDate(ends_at) }),
         );
-        return toAdminEvent(updated, baseUrl);
+        const warnings: string[] = [];
+        const sold = updated.ticket_types.reduce((sum, ticket) => sum + ticket.sold, 0);
+        const changed = (['online_url', 'starts_at', 'ends_at', 'location_name', 'location_address'] as const)
+          .filter((key) => String(before[key]) !== String(updated[key]));
+        if (sold > 0 && changed.length > 0) {
+          warnings.push(
+            `${sold} tickets are already sold and ${changed.join(', ')} changed. ` +
+              'Buyers still have the old details. Use resend_confirmations to inform them.',
+          );
+        }
+        return { warnings, event: toAdminEvent(updated, baseUrl) };
       }),
   );
 
@@ -226,7 +263,14 @@ export function buildMcpServer(ctx: AppContext): McpServer {
     ({ event, status }) =>
       run(async () => {
         const result = await setEventStatus(db, event, status);
-        return { warnings: result.warnings, event: toAdminEvent(result.event, baseUrl) };
+        const warnings = [...result.warnings];
+        if (result.event.status === 'published') {
+          const problems = await listSetupProblems(ctx);
+          if (problems.length > 0) {
+            warnings.push(`Tickets cannot be bought yet: ${problems.join(' ')}`);
+          }
+        }
+        return { warnings, event: toAdminEvent(result.event, baseUrl) };
       }),
   );
 
@@ -421,6 +465,34 @@ export function buildMcpServer(ctx: AppContext): McpServer {
           .min(0)
           .optional()
           .describe('The website learns the number of free seats only at or below this value'),
+        default_tax_percent: z
+          .number()
+          .min(0)
+          .max(100)
+          .nullable()
+          .optional()
+          .describe(
+            'Tax rate included in ticket prices, e.g. 19. Use 0 when no tax is to be shown. Ticket sales stay closed while this is null',
+          ),
+        stripe_invoices: z
+          .boolean()
+          .optional()
+          .describe('Stripe creates and sends an invoice for every purchase'),
+        invoice_footer: z
+          .string()
+          .max(1000)
+          .optional()
+          .describe('Printed at the bottom of invoices, e.g. a note on tax exemption'),
+        confirmation_intro: z
+          .string()
+          .max(2000)
+          .optional()
+          .describe('Extra paragraph at the start of the confirmation mail'),
+        confirmation_footer: z
+          .string()
+          .max(2000)
+          .optional()
+          .describe('Extra paragraph at the end of the confirmation mail, e.g. contact details'),
       },
     },
     (patch) =>
@@ -481,5 +553,174 @@ export function buildMcpServer(ctx: AppContext): McpServer {
       }),
   );
 
+  // Orders
+
+  server.registerTool(
+    'list_orders',
+    {
+      title: 'List orders',
+      description:
+        'Lists orders with buyer, tickets and amount, newest first. Without a status only paid orders are returned. Doubles as the list of participants of an event.',
+      inputSchema: {
+        event: eventRef.optional(),
+        status: z.enum([...ORDER_STATUSES, 'all']).optional().describe('Defaults to paid'),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    ({ event, status }) =>
+      run(async () => {
+        const orders = await listOrders(db, {
+          ...(event ? { event_id: (await getEvent(db, event)).id } : {}),
+          ...(status === 'all' ? {} : { statuses: [status ?? 'paid'] }),
+        });
+        const paid = orders.filter((order) => order.status === 'paid');
+        return {
+          totals: {
+            orders: orders.length,
+            paid_orders: paid.length,
+            paid_tickets: paid.reduce((sum, order) => sum + order.quantity, 0),
+            paid_amount_cents: paid.reduce((sum, order) => sum + (order.amount_total_cents ?? 0), 0),
+          },
+          orders: orders.map(toAdminOrder),
+        };
+      }),
+  );
+
+  server.registerTool(
+    'get_order',
+    {
+      title: 'Get order',
+      description: 'Returns one order with payment references and the state of the confirmation mail.',
+      inputSchema: { order_id: z.string().min(1) },
+      annotations: { readOnlyHint: true },
+    },
+    ({ order_id }) => run(async () => toAdminOrder(await getOrder(db, order_id))),
+  );
+
+  server.registerTool(
+    'refund_order',
+    {
+      title: 'Refund order',
+      description:
+        'Pays the full amount of a paid order back through Stripe, corrects the invoice with a credit note and frees the seats. This cannot be undone.',
+      inputSchema: { order_id: z.string().min(1) },
+      annotations: { destructiveHint: true, openWorldHint: true },
+    },
+    ({ order_id }) =>
+      run(async () => {
+        const result = await refundOrder(ctx, order_id);
+        return {
+          refunded: true,
+          credit_note_id: result.credit_note_id,
+          refund_id: result.refund_id,
+          order: toAdminOrder(result.order),
+        };
+      }),
+  );
+
+  server.registerTool(
+    'resend_confirmation',
+    {
+      title: 'Resend confirmation',
+      description: 'Sends the confirmation mail of one paid order again, with the current event details.',
+      inputSchema: { order_id: z.string().min(1) },
+      annotations: { openWorldHint: true },
+    },
+    ({ order_id }) =>
+      run(async () => ({ sent: true, order: toAdminOrder(await resendConfirmation(ctx, order_id)) })),
+  );
+
+  server.registerTool(
+    'resend_confirmations',
+    {
+      title: 'Resend confirmations for an event',
+      description:
+        'Sends the confirmation mail again to every buyer of an event, with the current event details. Use it after the online URL, the time or the venue changed.',
+      inputSchema: {
+        event: eventRef,
+        attendance: z.enum(ATTENDANCE_MODES).optional().describe('Only buyers of these tickets'),
+      },
+      annotations: { openWorldHint: true },
+    },
+    ({ event, attendance }) =>
+      run(async () => {
+        const queued = await requeueConfirmations(ctx, event, attendance);
+        const result = queued > 0 ? await deliverConfirmations(ctx) : { sent: 0, failed: 0 };
+        return {
+          orders: queued,
+          ...result,
+          remaining: Math.max(0, queued - result.sent - result.failed),
+          note:
+            queued > result.sent
+              ? 'Mails that are not sent yet follow automatically within minutes. list_orders shows errors.'
+              : undefined,
+        };
+      }),
+  );
+
+  // Stripe
+
+  server.registerTool(
+    'get_stripe_status',
+    {
+      title: 'Get Stripe status',
+      description:
+        'Checks the connection to Stripe and lists everything that is still missing before tickets can be sold.',
+      inputSchema: {},
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    () => run(() => getStripeStatus(ctx)),
+  );
+
+  server.registerTool(
+    'update_stripe_settings',
+    {
+      title: 'Update Stripe keys',
+      description:
+        'Stores the Stripe secret key, encrypted. A restricted key (rk_...) with write access to Checkout Sessions, Tax Rates, Credit Notes, Refunds and Webhook Endpoints is enough. The webhook secret is set by create_stripe_webhook and only needs to be passed here when the webhook was created by hand. Keys are never returned.',
+      inputSchema: {
+        secret_key: z.string().nullable().optional().describe('sk_... or rk_.... null removes the key'),
+        webhook_secret: z.string().nullable().optional().describe('whsec_.... null removes the secret'),
+      },
+      annotations: { openWorldHint: true },
+    },
+    (patch) =>
+      run(async () => {
+        const { notes } = await updateStripeKeys(ctx, sent(patch));
+        return { notes, status: await getStripeStatus(ctx) };
+      }),
+  );
+
+  server.registerTool(
+    'create_stripe_webhook',
+    {
+      title: 'Create Stripe webhook',
+      description:
+        'Registers this service at Stripe as receiver of payment events and stores the signing secret. Run it once after connecting Stripe, and again after switching between test and live mode.',
+      inputSchema: {},
+      annotations: { openWorldHint: true },
+    },
+    () =>
+      run(async () => {
+        try {
+          return { webhook: await createStripeWebhook(ctx), status: await getStripeStatus(ctx) };
+        } catch (err) {
+          throw explainStripeError(err);
+        }
+      }),
+  );
+
   return server;
+}
+
+function toAdminOrder(order: Order) {
+  const { confirmation_attempts, confirmation_error, confirmation_sent_at, ...rest } = order;
+  return {
+    ...rest,
+    confirmation: {
+      sent_at: confirmation_sent_at,
+      attempts: confirmation_attempts,
+      error: confirmation_error,
+    },
+  };
 }

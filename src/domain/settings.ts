@@ -23,6 +23,26 @@ export const generalSettingsSchema = z.object({
   privacy_url: httpUrl.nullable().default(null),
   /** The public API shows the number of free seats only at or below this value. */
   low_stock_threshold: z.number().int().min(0).max(1000).default(10),
+  /**
+   * Tax rate included in ticket prices. null means undecided and blocks ticket sales,
+   * 0 means that no tax is shown.
+   */
+  default_tax_percent: z.number().min(0).max(100).nullable().default(null),
+  /** Let Stripe create and send an invoice for every purchase. */
+  stripe_invoices: z.boolean().default(true),
+  /** Printed at the bottom of invoices, e.g. a note on tax exemption. */
+  invoice_footer: z.string().max(1000).default(''),
+  /** Optional paragraphs for the confirmation mail. */
+  confirmation_intro: z.string().max(2000).default(''),
+  confirmation_footer: z.string().max(2000).default(''),
+});
+
+export const stripeSettingsSchema = z.object({
+  secret_key_encrypted: z.string().nullable().default(null),
+  webhook_secret_encrypted: z.string().nullable().default(null),
+  webhook_endpoint_id: z.string().nullable().default(null),
+  /** Tax rate objects at Stripe, by mode and percentage, e.g. "test:19". */
+  tax_rate_ids: z.record(z.string(), z.string()).default({}),
 });
 
 export const mailSettingsSchema = z.object({
@@ -39,6 +59,7 @@ export const mailSettingsSchema = z.object({
 
 export type GeneralSettings = z.infer<typeof generalSettingsSchema>;
 export type MailSettings = z.infer<typeof mailSettingsSchema>;
+export type StripeSettings = z.infer<typeof stripeSettingsSchema>;
 export type GeneralSettingsPatch = Partial<GeneralSettings>;
 export type MailSettingsPatch = Partial<Omit<MailSettings, 'password_encrypted'>> & {
   /** Plain password. null removes the stored one. */
@@ -107,6 +128,14 @@ export async function updateMailSettings(
   });
   await write(db, 'mail', next);
   return next;
+}
+
+export function getStripeSettings(db: Queryable): Promise<StripeSettings> {
+  return read(db, 'stripe', stripeSettingsSchema);
+}
+
+export async function saveStripeSettings(db: Queryable, settings: StripeSettings): Promise<void> {
+  await write(db, 'stripe', parseOrThrow(stripeSettingsSchema, settings));
 }
 
 /** The SMTP password. A value from the environment wins over the stored one. */
