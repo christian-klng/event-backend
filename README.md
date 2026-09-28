@@ -164,12 +164,8 @@ Die Tests laufen ohne Docker gegen die eingebettete Datenbank. Gegen ein echtes 
 TEST_DATABASE_URL=postgres://user:pass@localhost:5432/events npx vitest run --no-file-parallelism
 ```
 
-## Deployment mit Coolify
+## Deployment
 
-1. In Coolify eine **PostgreSQL**-Ressource anlegen und geplante Backups auf einen S3-Speicher einrichten. Die Thumbnails liegen in der Datenbank, das Backup deckt also alles ab.
-2. Eine **Application** aus dem GitHub-Repo anlegen, Build Pack `Dockerfile`, Port `3000`.
-3. Domain eintragen, z. B. `https://events.example.de`.
-4. Umgebungsvariablen setzen: `ADMIN_TOKEN`, `APP_SECRET`, `PUBLIC_BASE_URL`, `DATABASE_URL` (interne Postgres-URL aus Coolify).
-5. Health Check auf `/healthz` stellen.
+Die Schritt-für-Schritt-Anleitung für Coolify samt Testkauf und Live-Schaltung steht in [docs/deployment.md](docs/deployment.md).
 
-Die Datenbank-Migrationen laufen automatisch beim Start. Der Dienst braucht kein eigenes Volume.
+Der Dienst braucht eine Postgres-Datenbank und kein eigenes Volume. Migrationen laufen beim Start automatisch.
