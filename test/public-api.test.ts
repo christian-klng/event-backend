@@ -143,6 +143,20 @@ describe('GET /v1/events/:slug', () => {
   });
 });
 
+describe('tax', () => {
+  it('tells the website which tax the prices contain', async () => {
+    const regular = await publish({ title: 'Regulär' });
+    const reduced = await publish({ title: 'Ermäßigt', tax_percent: 7 });
+    const taxOf = async (slug: string) => (await getJson(`/v1/events/${slug}`)).body.event.tax_percent;
+
+    expect(await taxOf(regular.slug)).toBeNull();
+    await updateGeneralSettings(t.db, { default_tax_percent: 19 });
+    t.ctx.invalidateSettings();
+    expect(await taxOf(regular.slug)).toBe(19);
+    expect(await taxOf(reduced.slug)).toBe(7);
+  });
+});
+
 describe('CORS', () => {
   it('allows any website until origins are configured', async () => {
     const { response } = await getJson('/v1/events', { origin: 'https://anywhere.example' });
@@ -173,5 +187,32 @@ describe('GET /healthz', () => {
     const { response, body } = await getJson('/healthz');
     expect(response.status).toBe(200);
     expect(body).toEqual({ ok: true });
+  });
+});
+
+describe('embed script and demo pages', () => {
+  it('serves the script with caching', async () => {
+    const response = await t.app.request('/embed.js');
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/javascript');
+    expect(response.headers.get('cache-control')).toBe('public, max-age=300');
+    expect(await response.text()).toContain("customElements.define('event-list'");
+
+    const etag = response.headers.get('etag')!;
+    const cached = await t.app.request('/embed.js', { headers: { 'if-none-match': etag } });
+    expect(cached.status).toBe(304);
+  });
+
+  it('serves demo pages that search engines skip', async () => {
+    for (const [path, element] of [
+      ['/demo', '<event-list'],
+      ['/demo/danke', '<event-order-status'],
+    ] as const) {
+      const response = await t.app.request(path);
+      const html = await response.text();
+      expect(response.headers.get('content-type')).toContain('text/html');
+      expect(html).toContain(element);
+      expect(html).toContain('noindex');
+    }
   });
 });

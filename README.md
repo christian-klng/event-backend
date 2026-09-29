@@ -12,8 +12,8 @@ Kleiner Dienst für den Verkauf von Seminaren und Workshops über die eigene Web
 |---|---|---|
 | 1 | Grundgerüst, Datenbank, Lese-API, MCP-Tools für Events, Thumbnails und Einstellungen | fertig |
 | 2 | Stripe Checkout, Webhooks, Platzreservierung, Mails an Käufer, Erstattungen | fertig, Testkauf mit echtem Stripe-Konto steht aus |
-| 3 | Snippet für die Webseite, Danke-Seite | offen |
-| 4 | Deployment auf Coolify, Stripe live | offen |
+| 3 | Snippet für die Webseite, Danke-Seite | fertig |
+| 4 | Deployment auf Coolify, Stripe live | Dienst läuft, Stripe-Einrichtung und Testkauf offen |
 
 ## Lokal starten
 
@@ -59,6 +59,8 @@ npm run dev
 | `GET /media/:hash/large.webp` | Thumbnail, maximal 1600 px breit |
 | `GET /media/:hash/small.webp` | Thumbnail, maximal 640 px breit |
 | `POST /webhooks/stripe` | Zahlungsereignisse von Stripe |
+| `GET /embed.js` | Skript für die Webseite, siehe [docs/einbettung.md](docs/einbettung.md) |
+| `GET /demo`, `GET /demo/danke` | Vorschau der Einbettung |
 | `GET /healthz` | Health Check |
 
 Entwürfe und archivierte Events sind nie sichtbar. Die Online-URL und Verkaufszahlen erscheinen nie in der öffentlichen API. Die Zahl freier Plätze (`remaining`) wird nur geliefert, wenn sie den Schwellenwert `low_stock_threshold` erreicht oder unterschreitet.

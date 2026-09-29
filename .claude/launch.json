@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "event-backend",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "PORT=3917 PUBLIC_BASE_URL=http://localhost:3917 npm run dev"],
+      "port": 3917,
+      "autoPort": false
+    }
+  ]
+}

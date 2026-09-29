@@ -5,6 +5,15 @@ import { findEvent, listEvents } from '../domain/events.ts';
 import { findImage, IMAGE_VARIANTS } from '../domain/images.ts';
 import type { ImageVariant } from '../domain/images.ts';
 import { toPublicEvent } from '../domain/present.ts';
+import type { GeneralSettings } from '../domain/settings.ts';
+
+function presentOptions(ctx: AppContext, settings: GeneralSettings) {
+  return {
+    baseUrl: ctx.config.publicBaseUrl,
+    lowStockThreshold: settings.low_stock_threshold,
+    defaultTaxPercent: settings.default_tax_percent,
+  };
+}
 
 const PUBLIC_STATUSES = ['published', 'cancelled'] as const;
 
@@ -42,7 +51,7 @@ export function publicRoutes(ctx: AppContext): Hono {
       listEvents(ctx.db, { statuses: ['published'], when }),
       ctx.generalSettings(),
     ]);
-    const options = { baseUrl: ctx.config.publicBaseUrl, lowStockThreshold: settings.low_stock_threshold };
+    const options = presentOptions(ctx, settings);
     c.header('cache-control', 'public, max-age=15');
     return c.json({ events: events.map((event) => toPublicEvent(event, options, false)) });
   });
@@ -53,7 +62,7 @@ export function publicRoutes(ctx: AppContext): Hono {
       return c.json({ error: 'not_found', message: 'Event not found' }, 404);
     }
     const settings = await ctx.generalSettings();
-    const options = { baseUrl: ctx.config.publicBaseUrl, lowStockThreshold: settings.low_stock_threshold };
+    const options = presentOptions(ctx, settings);
     c.header('cache-control', 'public, max-age=15');
     return c.json({ event: toPublicEvent(event, options, true) });
   });

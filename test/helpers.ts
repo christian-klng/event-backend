@@ -56,7 +56,7 @@ export async function createTestApp(hooks: Hooks = {}) {
   const db = await openDb(testConfig.databaseUrl);
   await migrate(db);
   const ctx = createContext(testConfig, db, hooks);
-  const app = createApp(ctx);
+  const app = await createApp(ctx);
   let nextId = 1;
 
   async function rpc(method: string, params: unknown, token: string | null = ADMIN_TOKEN) {

@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { AppContext } from './context.ts';
 import { checkoutRoutes } from './http/checkout.ts';
+import { embedRoutes } from './http/embed.ts';
 import { publicRoutes } from './http/public.ts';
 import { uploadRoutes } from './http/uploads.ts';
 import { DomainError } from './lib/errors.ts';
@@ -8,7 +9,7 @@ import { mcpRoutes } from './mcp/http.ts';
 
 const STATUS_BY_CODE = { not_found: 404, invalid: 400, conflict: 409, unavailable: 503 } as const;
 
-export function createApp(ctx: AppContext): Hono {
+export async function createApp(ctx: AppContext): Promise<Hono> {
   const app = new Hono();
 
   app.onError((err, c) => {
@@ -35,6 +36,7 @@ export function createApp(ctx: AppContext): Hono {
 
   app.route('/', publicRoutes(ctx));
   app.route('/', checkoutRoutes(ctx));
+  app.route('/', await embedRoutes());
   app.route('/', uploadRoutes(ctx));
   app.route('/', mcpRoutes(ctx));
 

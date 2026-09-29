@@ -13,7 +13,7 @@ const applied = await migrate(db);
 if (applied.length > 0) console.log(`applied migrations: ${applied.join(', ')}`);
 
 const ctx = createContext(config, db);
-const app = createApp(ctx);
+const app = await createApp(ctx);
 const stopJobs = startJobs(ctx);
 const server = serve({ fetch: app.fetch, port: config.port, hostname: '0.0.0.0' }, (info) => {
   console.log(`event-backend listening on port ${info.port} (${config.env})`);

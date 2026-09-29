@@ -5,6 +5,8 @@ import type { EventRecord, TicketType } from './events.ts';
 export interface PresentOptions {
   baseUrl: string;
   lowStockThreshold: number;
+  /** Tax rate for events without their own one. null while it is undecided. */
+  defaultTaxPercent: number | null;
   now?: Date;
 }
 
@@ -68,6 +70,8 @@ export function toPublicEvent(event: EventRecord, options: PresentOptions, detai
     thumbnail: thumbnail(event, options.baseUrl),
     price_from_cents: prices.length > 0 ? Math.min(...prices) : null,
     currency: tickets[0]?.currency ?? null,
+    /** Tax included in the prices. 0 means that no tax is shown. */
+    tax_percent: event.tax_percent ?? options.defaultTaxPercent,
     bookable: tickets.some((ticket) => ticket.on_sale),
     sold_out: tickets.length > 0 && tickets.every((ticket) => ticket.sold_out),
     tickets,

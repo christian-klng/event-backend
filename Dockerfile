@@ -7,6 +7,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY migrations ./migrations
+COPY public ./public
 COPY src ./src
 
 USER node
