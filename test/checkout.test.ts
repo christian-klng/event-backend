@@ -46,9 +46,17 @@ async function prepareSales(settings: Record<string, unknown> = {}) {
     from_name: 'Beispiel Akademie',
     from_email: 'events@example.test',
   });
-  await t.callTool('update_stripe_settings', { secret_key: 'sk_test_abc123' });
+  await t.callTool('update_stripe_settings', { secret_key: 'sk_test_abc123abc123abc123' });
   await t.callTool('create_stripe_webhook');
   stripe.requests.length = 0;
+}
+
+async function prepareSettingsOnly() {
+  await t.callTool('update_settings', {
+    checkout_success_url: 'https://www.example.com/danke',
+    checkout_cancel_url: 'https://www.example.com/seminare',
+    default_tax_percent: 19,
+  });
 }
 
 async function publish(overrides: Partial<EventInput> = {}): Promise<EventRecord> {
@@ -123,7 +131,7 @@ describe('connecting Stripe', () => {
       checkout_cancel_url: 'https://www.example.com/seminare',
       default_tax_percent: 19,
     });
-    const connected = await t.callTool('update_stripe_settings', { secret_key: 'sk_test_abc123' });
+    const connected = await t.callTool('update_stripe_settings', { secret_key: 'sk_test_abc123abc123abc123' });
     expect(connected.data.status).toMatchObject({
       connected: true,
       mode: 'test',
@@ -144,7 +152,7 @@ describe('connecting Stripe', () => {
   });
 
   it('never reveals keys and stores them encrypted', async () => {
-    const result = await t.callTool('update_stripe_settings', { secret_key: 'sk_test_abc123' });
+    const result = await t.callTool('update_stripe_settings', { secret_key: 'sk_test_abc123abc123abc123' });
     await t.callTool('create_stripe_webhook');
     const outputs = [
       result.text,
@@ -152,7 +160,7 @@ describe('connecting Stripe', () => {
       (await t.callTool('get_settings')).text,
       JSON.stringify(await t.db.query('select value from settings')),
     ].join('\n');
-    expect(outputs).not.toContain('sk_test_abc123');
+    expect(outputs).not.toContain('sk_test_abc123abc123abc123');
     expect(outputs).not.toContain('whsec_test_secret');
   });
 
@@ -160,14 +168,68 @@ describe('connecting Stripe', () => {
     const malformed = await t.callTool('update_stripe_settings', { secret_key: 'pk_test_abc' });
     expect(malformed.text).toContain('starts with sk_test_');
 
-    const revoked = await t.callTool('update_stripe_settings', { secret_key: 'sk_test_revoked' });
+    const revoked = await t.callTool('update_stripe_settings', { secret_key: 'sk_test_revoked00000000000' });
     expect(revoked.text).toContain('rejected the secret key');
     expect((await t.callTool('get_stripe_status')).data.connected).toBe(false);
   });
 
+  it('says what is wrong with a key from the environment, without showing it', async () => {
+    const cases: [string, string][] = [
+      ['pk_test_abc123abc123abc123', 'publishable key'],
+      ['whsec_abc123abc123abc123', 'webhook secret'],
+      ['"sk_test_abc123abc123abc123"', 'quotation marks'],
+      ['sk_test_abc123', 'too short (14 characters)'],
+      ['sk_test_abc123abc123 abc123', 'characters that do not belong in a key'],
+      ['sk_abc123abc123abc123abc123', 'lacks the part that says test or live'],
+      ['my-stripe-password', 'does not look like a Stripe key'],
+    ];
+    try {
+      for (const [key, expected] of cases) {
+        t.ctx.config.stripeSecretKeyOverride = key;
+        const status = await t.callTool('get_stripe_status');
+        expect(status.data, key).toMatchObject({ connected: false, mode: null, secret_key_source: 'environment' });
+        expect(status.data.problems.join(' '), key).toContain('STRIPE_SECRET_KEY in the environment is not usable.');
+        expect(status.data.problems.join(' '), key).toContain(expected);
+        expect(status.text, key).not.toContain(key.replace(/"/g, ''));
+      }
+      // Malformed keys never reach Stripe.
+      expect(stripe.requests).toHaveLength(0);
+
+      await prepareSettingsOnly();
+      const event = await publish();
+      expect(await checkout({ ticket_type_id: event.ticket_types[0]!.id })).toMatchObject({
+        status: 503,
+        body: { message: 'Ticket sales are not available at the moment.' },
+      });
+    } finally {
+      t.ctx.config.stripeSecretKeyOverride = undefined;
+    }
+  });
+
+  it('tells a well-formed but rejected key apart', async () => {
+    try {
+      t.ctx.config.stripeSecretKeyOverride = 'sk_test_revoked00000000000';
+      const status = (await t.callTool('get_stripe_status')).data;
+      expect(status).toMatchObject({ connected: false, mode: 'test' });
+      expect(status.problems.join(' ')).toContain(
+        'Its form is right (test mode, 26 characters), so it was probably deleted or replaced',
+      );
+    } finally {
+      t.ctx.config.stripeSecretKeyOverride = undefined;
+    }
+  });
+
+  it('explains malformed keys passed through MCP', async () => {
+    const publishable = await t.callTool('update_stripe_settings', { secret_key: 'pk_live_abc123abc123abc123' });
+    expect(publishable.text).toContain('publishable key');
+    // Spaces around a pasted key are harmless.
+    const padded = await t.callTool('update_stripe_settings', { secret_key: '  sk_test_abc123abc123abc123\n' });
+    expect(padded.data.status).toMatchObject({ connected: true, mode: 'test' });
+  });
+
   it('resets the webhook when switching from test to live mode', async () => {
     await prepareSales();
-    const switched = await t.callTool('update_stripe_settings', { secret_key: 'sk_live_abc123' });
+    const switched = await t.callTool('update_stripe_settings', { secret_key: 'sk_live_abc123abc123abc123' });
     expect(switched.data.notes[0]).toContain('test to live');
     expect(switched.data.status).toMatchObject({ mode: 'live', webhook: { secret_set: false } });
   });

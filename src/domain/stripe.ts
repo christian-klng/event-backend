@@ -14,7 +14,7 @@ export const WEBHOOK_EVENTS = [
   'charge.refunded',
 ] as const;
 
-const KEY_PATTERN = /^(sk|rk)_(test|live)_[A-Za-z0-9]+$/;
+const KEY_PATTERN = /^(sk|rk)_(test|live)_[A-Za-z0-9]{16,}$/;
 
 export type StripeMode = 'test' | 'live';
 type Source = 'environment' | 'database' | null;
@@ -24,11 +24,44 @@ export interface StripeCredentials {
   secretKeySource: Source;
   webhookSecret: string | null;
   webhookSecretSource: Source;
+  /** null while there is no key or the key is malformed. */
   mode: StripeMode | null;
+  /** What is wrong with the form of the secret key, if anything. */
+  secretKeyProblem: string | null;
 }
 
-function modeOf(secretKey: string): StripeMode {
-  return secretKey.includes('_live_') ? 'live' : 'test';
+function modeOf(secretKey: string): StripeMode | null {
+  const match = /^(?:sk|rk)_(test|live)_/.exec(secretKey);
+  return match ? (match[1] as StripeMode) : null;
+}
+
+/**
+ * Explains what is wrong with the form of a secret key. The answer never contains
+ * the key itself, only its kind and length.
+ */
+export function diagnoseSecretKey(key: string): string | null {
+  if (KEY_PATTERN.test(key)) return null;
+  const expected = 'A secret key starts with sk_test_, sk_live_, rk_test_ or rk_live_.';
+
+  if (key !== key.trim()) return 'The secret key has spaces or line breaks at its start or end.';
+  if (/^["'`].*["'`]$/.test(key)) {
+    return 'The secret key is wrapped in quotation marks. Enter the key without them.';
+  }
+  if (key.startsWith('pk_')) {
+    return `This is the publishable key (pk_…), not the secret key. ${expected}`;
+  }
+  if (key.startsWith('whsec_')) {
+    return `This is a webhook secret (whsec_…), not the secret key. ${expected}`;
+  }
+  if (/^(sk|rk)_(test|live)_/.test(key)) {
+    return /^[A-Za-z0-9_]+$/.test(key)
+      ? `The secret key is too short (${key.length} characters). It was probably copied incompletely.`
+      : 'The secret key contains characters that do not belong in a key, such as spaces, line breaks or dots. It was probably copied incompletely or together with other text.';
+  }
+  if (/^(sk|rk)_/.test(key)) {
+    return `The secret key lacks the part that says test or live. ${expected}`;
+  }
+  return `The value does not look like a Stripe key. ${expected}`;
 }
 
 /** Keys from the environment win over the ones stored through MCP. */
@@ -40,6 +73,7 @@ export async function getStripeCredentials(ctx: AppContext): Promise<StripeCrede
   const secretKey = config.stripeSecretKeyOverride ?? decrypt(stored.secret_key_encrypted);
   const webhookSecret =
     config.stripeWebhookSecretOverride ?? decrypt(stored.webhook_secret_encrypted);
+  const secretKeyProblem = secretKey ? diagnoseSecretKey(secretKey) : null;
   return {
     secretKey,
     secretKeySource: config.stripeSecretKeyOverride
@@ -53,7 +87,8 @@ export async function getStripeCredentials(ctx: AppContext): Promise<StripeCrede
       : stored.webhook_secret_encrypted
         ? 'database'
         : null,
-    mode: secretKey ? modeOf(secretKey) : null,
+    mode: secretKey && !secretKeyProblem ? modeOf(secretKey) : null,
+    secretKeyProblem,
   };
 }
 
@@ -74,8 +109,12 @@ export async function requireStripe(
   ctx: AppContext,
 ): Promise<{ stripe: Stripe; mode: StripeMode; credentials: StripeCredentials }> {
   const credentials = await getStripeCredentials(ctx);
-  if (!credentials.secretKey || !credentials.mode) {
-    throw new DomainError('unavailable', 'Stripe is not connected yet.', 'not_configured');
+  if (!credentials.secretKey || !credentials.mode || credentials.secretKeyProblem) {
+    throw new DomainError(
+      'unavailable',
+      credentials.secretKeyProblem ?? 'Stripe is not connected yet.',
+      'not_configured',
+    );
   }
   return { stripe: createStripe(ctx, credentials.secretKey), mode: credentials.mode, credentials };
 }
@@ -106,6 +145,11 @@ export async function listSetupProblems(ctx: AppContext): Promise<string[]> {
   const [credentials, general] = await Promise.all([getStripeCredentials(ctx), ctx.generalSettings()]);
   const problems: string[] = [];
   if (!credentials.secretKey) problems.push('No Stripe secret key is set.');
+  else if (credentials.secretKeyProblem) {
+    const where =
+      credentials.secretKeySource === 'environment' ? 'STRIPE_SECRET_KEY in the environment' : 'The stored key';
+    problems.push(`${where} is not usable. ${credentials.secretKeyProblem}`);
+  }
   if (!credentials.webhookSecret) {
     problems.push(
       'No webhook secret is set. Payments cannot be confirmed without it. Use create_stripe_webhook.',
@@ -144,7 +188,7 @@ export async function getStripeStatus(ctx: AppContext) {
     problems: await listSetupProblems(ctx),
   };
 
-  if (credentials.secretKey) {
+  if (credentials.secretKey && !credentials.secretKeyProblem) {
     try {
       const account = await createStripe(ctx, credentials.secretKey).accounts.retrieveCurrent();
       status.connected = true;
@@ -162,6 +206,12 @@ export async function getStripeStatus(ctx: AppContext) {
       if (err instanceof Stripe.errors.StripePermissionError) {
         // Restricted keys may not read the account. The key itself is fine.
         status.connected = true;
+      } else if (err instanceof Stripe.errors.StripeAuthenticationError) {
+        status.problems.push(
+          `Stripe rejected the secret key. Its form is right (${credentials.mode} mode, ` +
+            `${credentials.secretKey.length} characters), so it was probably deleted or replaced ` +
+            'at Stripe, or characters in the middle are missing. Create a new key at Stripe.',
+        );
       } else {
         status.problems.push(explainStripeError(err).message);
       }
@@ -187,12 +237,8 @@ export async function updateStripeKeys(
       next.secret_key_encrypted = null;
     } else {
       const key = patch.secret_key.trim();
-      if (!KEY_PATTERN.test(key)) {
-        throw new DomainError(
-          'invalid',
-          'A Stripe secret key starts with sk_test_, sk_live_, rk_test_ or rk_live_.',
-        );
-      }
+      const problem = diagnoseSecretKey(key);
+      if (problem) throw new DomainError('invalid', problem);
       try {
         await createStripe(ctx, key).accounts.retrieveCurrent();
       } catch (err) {

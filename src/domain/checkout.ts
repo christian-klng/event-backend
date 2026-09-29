@@ -40,7 +40,11 @@ export async function startCheckout(
     console.error('checkout refused: checkout_success_url or checkout_cancel_url is not set');
     throw new DomainError('unavailable', 'Ticket sales are not available at the moment.', 'not_configured');
   }
-  const { stripe, mode } = await requireStripe(ctx);
+  const { stripe, mode } = await requireStripe(ctx).catch((err: unknown) => {
+    // Buyers must not see details of the Stripe setup.
+    console.error('checkout refused:', err instanceof Error ? err.message : err);
+    throw new DomainError('unavailable', 'Ticket sales are not available at the moment.', 'not_configured');
+  });
 
   const checkoutEnds = new Date(Date.now() + CHECKOUT_MINUTES * 60_000);
   const reservation = await reserveSeats(ctx.db, {

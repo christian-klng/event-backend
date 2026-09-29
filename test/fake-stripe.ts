@@ -40,7 +40,7 @@ export function createFakeStripe() {
       failure = null;
       return json(body, status);
     }
-    if (headers.get('authorization') === 'Bearer sk_test_revoked') {
+    if (headers.get('authorization') === 'Bearer sk_test_revoked00000000000') {
       return json({ error: { type: 'invalid_request_error', message: 'Invalid API Key provided' } }, 401);
     }
 

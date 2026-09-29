@@ -44,7 +44,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     appSecret: value.APP_SECRET,
     publicBaseUrl: value.PUBLIC_BASE_URL.replace(/\/+$/, ''),
     smtpPasswordOverride: value.SMTP_PASSWORD,
-    stripeSecretKeyOverride: value.STRIPE_SECRET_KEY,
-    stripeWebhookSecretOverride: value.STRIPE_WEBHOOK_SECRET,
+    // Values pasted into a web form often carry a stray space or line break.
+    stripeSecretKeyOverride: value.STRIPE_SECRET_KEY?.trim() || undefined,
+    stripeWebhookSecretOverride: value.STRIPE_WEBHOOK_SECRET?.trim() || undefined,
   };
 }

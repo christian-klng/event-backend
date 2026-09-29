@@ -49,6 +49,16 @@ describe('configuration', () => {
     );
   });
 
+  it('removes stray spaces around Stripe keys', () => {
+    const config = loadConfig({
+      ...valid,
+      STRIPE_SECRET_KEY: ' sk_test_abc123abc123abc123\n',
+      STRIPE_WEBHOOK_SECRET: 'whsec_abc ',
+    });
+    expect(config.stripeSecretKeyOverride).toBe('sk_test_abc123abc123abc123');
+    expect(config.stripeWebhookSecretOverride).toBe('whsec_abc');
+  });
+
   it('names what is wrong', () => {
     expect(() => loadConfig({ ...valid, ADMIN_TOKEN: 'short' })).toThrow(/ADMIN_TOKEN/);
     expect(() => loadConfig({ ...valid, NODE_ENV: 'production' })).toThrow(/DATABASE_URL/);
