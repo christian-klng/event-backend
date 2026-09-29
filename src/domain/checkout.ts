@@ -13,6 +13,7 @@ import {
   reserveSeats,
 } from './orders.ts';
 import type { Order } from './orders.ts';
+import { clearCheckoutFailure, recordCheckoutFailure } from './settings.ts';
 import { ensureTaxRate, explainStripeError, requireStripe } from './stripe.ts';
 
 /** Stripe keeps a checkout open for at least 30 minutes. */
@@ -126,6 +127,7 @@ export async function startCheckout(
       livemode: session.livemode,
       tax_percent: taxPercent,
     });
+    await clearCheckoutFailure(ctx.db).catch(() => {});
     return {
       checkout_url: session.url,
       order_id: reservation.order_id,
@@ -133,18 +135,24 @@ export async function startCheckout(
     };
   } catch (err) {
     await discardReservation(ctx.db, reservation.order_id).catch(() => {});
-    if (err instanceof DomainError) throw err;
-    // Buyers must not see details of the Stripe setup.
-    console.error('checkout failed', explainStripeErrorSafely(err));
-    throw new DomainError('unavailable', 'Ticket sales are not available at the moment.', 'payment_provider');
+    if (err instanceof DomainError && err.code !== 'unavailable') throw err;
+    // Buyers must not see details of the Stripe setup. The administrator finds them in the status.
+    const reason = describeFailure(err);
+    console.error('checkout failed:', reason);
+    await recordCheckoutFailure(ctx.db, reason).catch(() => {});
+    throw new DomainError(
+      'unavailable',
+      'Ticket sales are not available at the moment.',
+      err instanceof DomainError ? err.reason : 'payment_provider',
+    );
   }
 }
 
-function explainStripeErrorSafely(err: unknown): unknown {
+function describeFailure(err: unknown): string {
   try {
     return explainStripeError(err).message;
   } catch {
-    return err;
+    return err instanceof Error ? `Unexpected error: ${err.message}` : 'Unexpected error';
   }
 }
 

@@ -130,6 +130,27 @@ export async function updateMailSettings(
   return next;
 }
 
+export interface CheckoutFailure {
+  at: string;
+  message: string;
+}
+
+/** The reason why the last checkout could not be opened, for the administrator. */
+export async function getLastCheckoutFailure(db: Queryable): Promise<CheckoutFailure | null> {
+  const [row] = await db.query<{ value: CheckoutFailure }>(
+    "select value from settings where key = 'checkout_failure'",
+  );
+  return row?.value ?? null;
+}
+
+export async function recordCheckoutFailure(db: Queryable, message: string): Promise<void> {
+  await write(db, 'checkout_failure', { at: new Date().toISOString(), message: message.slice(0, 1000) });
+}
+
+export async function clearCheckoutFailure(db: Queryable): Promise<void> {
+  await db.query("delete from settings where key = 'checkout_failure'");
+}
+
 export function getStripeSettings(db: Queryable): Promise<StripeSettings> {
   return read(db, 'stripe', stripeSettingsSchema);
 }

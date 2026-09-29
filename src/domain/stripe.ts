@@ -2,7 +2,12 @@ import Stripe from 'stripe';
 import type { AppContext } from '../context.ts';
 import { decryptSecret, encryptSecret } from '../lib/crypto.ts';
 import { DomainError } from '../lib/errors.ts';
-import { getStripeSettings, saveStripeSettings } from './settings.ts';
+import {
+  getLastCheckoutFailure,
+  getMailSettings,
+  getStripeSettings,
+  saveStripeSettings,
+} from './settings.ts';
 
 export const WEBHOOK_PATH = '/webhooks/stripe';
 
@@ -135,7 +140,10 @@ export function explainStripeError(err: unknown): DomainError {
     return new DomainError('unavailable', 'Stripe could not be reached. Try again in a moment.');
   }
   if (err instanceof Stripe.errors.StripeError) {
-    return new DomainError('invalid', `Stripe answered: ${err.message}`);
+    const details = [err.param && `parameter: ${err.param}`, err.code && `code: ${err.code}`]
+      .filter(Boolean)
+      .join(', ');
+    return new DomainError('invalid', `Stripe answered: ${err.message}${details ? ` (${details})` : ''}`);
   }
   throw err;
 }
@@ -161,6 +169,12 @@ export async function listSetupProblems(ctx: AppContext): Promise<string[]> {
   if (general.default_tax_percent === null) {
     problems.push('default_tax_percent is not set in the settings. Use 0 if no tax is to be shown.');
   }
+  const mail = await getMailSettings(ctx.db);
+  if (!mail.host || !mail.from_email) {
+    problems.push(
+      'No mailbox is set up. Buyers would pay without getting a confirmation. Use update_mail_settings and send_test_email.',
+    );
+  }
   return problems;
 }
 
@@ -185,8 +199,15 @@ export async function getStripeStatus(ctx: AppContext) {
       secret_source: credentials.webhookSecretSource,
       endpoint_id: stored.webhook_endpoint_id,
     },
+    /** Why the last attempt to open a checkout failed. Cleared by the next one that works. */
+    last_checkout_failure: await getLastCheckoutFailure(ctx.db),
     problems: await listSetupProblems(ctx),
   };
+  if (status.last_checkout_failure) {
+    status.problems.push(
+      `The last checkout could not be opened (${status.last_checkout_failure.at}). ${status.last_checkout_failure.message}`,
+    );
+  }
 
   if (credentials.secretKey && !credentials.secretKeyProblem) {
     try {

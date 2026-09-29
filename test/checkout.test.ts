@@ -118,14 +118,16 @@ describe('connecting Stripe', () => {
   it('lists what is missing before tickets can be sold', async () => {
     const status = (await t.callTool('get_stripe_status')).data;
     expect(status).toMatchObject({ connected: false, ready_for_sales: false, mode: null });
-    expect(status.problems).toHaveLength(4);
+    expect(status.problems).toHaveLength(5);
+    expect(status.problems.join(' ')).toContain('No mailbox is set up');
 
     const event = await createEvent(t.db, eventInput());
     const published = await t.callTool('set_event_status', { event: event.id, status: 'published' });
     expect(published.data.warnings.join(' ')).toContain('Tickets cannot be bought yet');
   });
 
-  it('is ready after keys, webhook, URLs and tax rate are set', async () => {
+  it('is ready after keys, webhook, URLs, tax rate and mailbox are set', async () => {
+    await t.callTool('update_mail_settings', { host: 'smtp.example.test', from_email: 'events@example.test' });
     await t.callTool('update_settings', {
       checkout_success_url: 'https://www.example.com/danke',
       checkout_cancel_url: 'https://www.example.com/seminare',
@@ -405,6 +407,29 @@ describe('POST /v1/checkout', () => {
     expect(failed).toMatchObject({ status: 503, body: { reason: 'payment_provider' } });
     expect(JSON.stringify(failed.body)).not.toContain('tax_rates');
     expect(await orderCount()).toBe(1);
+  });
+
+  it('tells the administrator why a checkout failed', async () => {
+    await prepareSales();
+    const event = await publish();
+    expect((await t.callTool('get_stripe_status')).data).toMatchObject({
+      last_checkout_failure: null,
+      ready_for_sales: true,
+    });
+
+    stripe.failNext(400, 'Invalid tax_rates', 'invalid_request_error');
+    await checkout({ ticket_type_id: event.ticket_types[0]!.id });
+
+    const broken = (await t.callTool('get_stripe_status')).data;
+    expect(broken.ready_for_sales).toBe(false);
+    expect(broken.last_checkout_failure.message).toBe('Stripe answered: Invalid tax_rates');
+    expect(broken.problems.join(' ')).toContain('The last checkout could not be opened');
+
+    expect((await checkout({ ticket_type_id: event.ticket_types[0]!.id })).status).toBe(201);
+    expect((await t.callTool('get_stripe_status')).data).toMatchObject({
+      last_checkout_failure: null,
+      ready_for_sales: true,
+    });
   });
 
   it('limits how many checkouts one visitor may open', async () => {
